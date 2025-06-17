@@ -1,0 +1,108 @@
+import serial
+import time
+import matplotlib.pyplot as plt
+import random
+import csv
+import math
+
+SERIAL_PORT = 'COM8'  # Update this if needed
+BAUD_RATE = 9600
+POP_SIZE = 10
+NUM_GENERATIONS = 15
+
+def send_command(ser, speed, phase):
+    command = f"START {speed:.2f},{phase:.4f}\n"
+    print(f"Sending: {command.strip()}")
+    ser.write(command.encode())
+
+def get_energy_used(ser, timeout=10):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if ser.in_waiting:
+            line = ser.readline().decode().strip()
+            print(f"Received line: {line}")
+            if line.startswith("RESULT:"):
+                try:
+                    return float(line.split(":")[1])
+                except ValueError:
+                    return None
+    print("⚠️ Timeout: No valid RESULT received.")
+    return None
+
+# Initialize serial connection
+print("Connecting to Arduino...")
+ser = serial.Serial(SERIAL_PORT, BAUD_RATE)
+time.sleep(3)
+print("Connected!")
+
+# Setup CSV logging
+csv_file = open('experiment_results4.csv', mode='w', newline='')
+csv_writer = csv.writer(csv_file)
+csv_writer.writerow(['Generation', 'Speed', 'Phase', 'Energy'])
+
+# Expanded value ranges
+SPEED_MIN, SPEED_MAX = 0.05, 10
+PHASE_MIN, PHASE_MAX = 0.0, 2 * math.pi
+
+# Initialize population
+population = [(random.uniform(SPEED_MIN, SPEED_MAX),
+               random.uniform(PHASE_MIN, PHASE_MAX)) for _ in range(POP_SIZE)]
+best_energies = []
+
+# Setup live plot
+plt.ion()
+fig, ax = plt.subplots()
+line, = ax.plot([], [], 'ro-')
+ax.set_xlabel("Generation")
+ax.set_ylabel("Best Energy Used (J)")
+ax.set_title("Genetic Optimization of Servo Motion")
+
+# Evolution loop
+for gen in range(NUM_GENERATIONS):
+    print(f"\n🧬 Generation {gen + 1}/{NUM_GENERATIONS}")
+    results = []
+
+    for speed, phase in population:
+        send_command(ser, speed, phase)
+        energy = get_energy_used(ser)
+        if energy is not None:
+            results.append(((speed, phase), energy))
+            print(f"✅ Speed: {speed:.2f}, Phase: {phase:.4f}, Energy: {energy:.4f}")
+            csv_writer.writerow([gen + 1, speed, phase, energy])
+        else:
+            print(f"❌ Failed at Speed: {speed:.2f}, Phase: {phase:.4f}")
+
+    if not results:
+        print("❌ No results in this generation. Skipping evolution.")
+        continue
+
+    results.sort(key=lambda x: x[1])  # Sort by energy used
+    best_energies.append(results[0][1])
+
+    # Update plot
+    line.set_xdata(range(len(best_energies)))
+    line.set_ydata(best_energies)
+    ax.relim()
+    ax.autoscale_view()
+    plt.pause(0.01)
+
+    # Evolve from top 2
+    top = results[:5]
+    population = [top[0][0]]  # Keep best individual (elitism)
+    
+    while len(population) < POP_SIZE:
+        p1, _ = random.choice(top)
+        p2, _ = random.choice(top)
+        speed = (p1[0] + p2[0]) / 2 + random.uniform(-0.1, 0.1)
+        phase = (p1[1] + p2[1]) / 2 + random.uniform(-0.1, 0.1)
+
+        # Clamp or wrap within bounds
+        speed = max(SPEED_MIN, min(speed, SPEED_MAX))
+        phase = phase % (2 * math.pi)  # Wrap around 0–2π
+
+        population.append((speed, phase))
+
+ser.close()
+csv_file.close()
+plt.ioff()
+plt.show()
