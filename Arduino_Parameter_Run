@@ -1,0 +1,121 @@
+#include <Servo.h>
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+
+Servo servos[5];  // Adjust if you have 6 servos
+const int numServos = 5;
+
+Adafruit_INA219 ina219;
+
+float speed = 1.0;
+float phase = 1.0;
+
+void setup() {
+  Serial.begin(9600);
+  ina219.begin();
+
+  for (int i = 0; i < numServos; i++) {
+    servos[i].attach(i + 2);  // Attach servos to pins 2,3,4,5,6
+  }
+
+  Serial.println("Arduino Ready");
+}
+
+void loop() {
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+
+    Serial.print("Raw input: '");
+    Serial.print(input);
+    Serial.println("'");
+
+    if (input.startsWith("START")) {
+      int spaceIndex = input.indexOf(' ');
+      if (spaceIndex > 0) {
+        String params = input.substring(spaceIndex + 1);
+        int commaIndex = params.indexOf(',');
+        if (commaIndex > 0) {
+          String speedStr = params.substring(0, commaIndex);
+          String phaseStr = params.substring(commaIndex + 1);
+
+          speedStr.trim();
+          phaseStr.trim();
+
+          float newSpeed = speedStr.toFloat();
+          float newPhase = phaseStr.toFloat();
+
+          Serial.print("Parsed speed: ");
+          Serial.println(newSpeed, 4);
+          Serial.print("Parsed phase: ");
+          Serial.println(newPhase, 4);
+
+          if (newSpeed > 0 && newPhase >= 0) {
+            speed = newSpeed;
+            phase = newPhase;
+            runMotionCycle(speed, phase);
+          } else {
+            Serial.println("Error: Invalid numeric values");
+          }
+        } else {
+          Serial.println("Error: No comma found in parameters");
+        }
+      } else {
+        Serial.println("Error: No space after START");
+      }
+    } else {
+      Serial.println("Error: Unknown command");
+    }
+  }
+}
+
+void runMotionCycle(float speed, float phase) {
+  float amplitude = 45; // degrees
+  int center = 90;
+  int steps = 50;
+  float totalEnergy = 0.0;
+  float stepTime = 1000.0 / (speed * steps);  // milliseconds per step
+  float stepTimeSec = stepTime / 1000.0;
+
+  // Move all servos to center position
+  for (int i = 0; i < numServos; i++) {
+    servos[i].write(center);
+  }
+  delay(500);
+
+  // Forward sweep: 90 → max
+  for (int s = 0; s <= steps; s++) {
+    for (int i = 0; i < numServos; i++) {
+      float angle = center + amplitude * sin(phase * i + (PI * s / steps));
+      servos[i].write(angle);
+    }
+    totalEnergy += readPower() * stepTimeSec;
+    delay(stepTime);
+  }
+
+  // Backward sweep: max → min
+  for (int s = 0; s <= steps; s++) {
+    for (int i = 0; i < numServos; i++) {
+      float angle = center - amplitude * sin(phase * i + (PI * s / steps));
+      servos[i].write(angle);
+    }
+    totalEnergy += readPower() * stepTimeSec;
+    delay(stepTime);
+  }
+
+  // Return all servos to center
+  for (int i = 0; i < numServos; i++) {
+    servos[i].write(center);
+  }
+  delay(500);
+
+  Serial.println("DONE");
+  Serial.print("RESULT:");
+  Serial.println(totalEnergy, 4);
+}
+
+float readPower() {
+  float voltage = ina219.getBusVoltage_V();
+  float current = ina219.getCurrent_mA() / 1000.0; // Convert mA to A
+  return voltage * current; // Watts
+}
